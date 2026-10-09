@@ -19,7 +19,7 @@
     "./mcp": "./mcp/server.mjs"
   },
   "bin": {
-    "opindex-mcp": "./mcp/server.mjs"
+    "opindex-mcp": "mcp/server.mjs"
   },
   "files": [
     "src",

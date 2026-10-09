@@ -7,6 +7,7 @@
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { existsSync, readFileSync } from 'node:fs';
 
 const child = spawn('node', [fileURLToPath(new URL('../mcp/server.mjs', import.meta.url))], { stdio: ['pipe', 'pipe', 'inherit'], env: process.env });
 let buf = '';
@@ -146,6 +147,31 @@ check(
   /refusal is charged|needs_acknowledgement\*\* refusal|The refusal is charged/i.test(skill),
   'skill text',
 );
+
+// ------------------------------------------------ the package must install
+//
+// `npx opindex-agent` is how most people will ever run this, and it works only
+// if the `bin` entry survives publishing. npm silently DROPS a bin whose path
+// starts with `./` — and says so in a warning that prints the normalised path,
+// which is the valid form, so the message points at a string that is fine.
+// That cost one failed publish; it costs nothing to pin.
+const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+const bins = Object.entries(pkg.bin ?? {});
+check('the package declares an executable', bins.length > 0, JSON.stringify(pkg.bin));
+for (const [name, target] of bins) {
+  check(
+    `bin.${name} has no "./" prefix, which npm would drop`,
+    !target.startsWith('./'),
+    target,
+  );
+  const path = fileURLToPath(new URL(`../${target}`, import.meta.url));
+  check(`bin.${name} points at a file that exists`, existsSync(path), target);
+  check(
+    `bin.${name} starts with a shebang`,
+    existsSync(path) && readFileSync(path, 'utf8').startsWith('#!'),
+    'first line',
+  );
+}
 
 child.kill();
 
