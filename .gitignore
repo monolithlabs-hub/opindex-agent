@@ -1,0 +1,8 @@
+# This package drives a wallet. Keys live outside the source tree, and this
+# directory refuses them even so.
+node_modules/
+*.json
+.env
+# ...but the package must be installable from a fresh clone.
+!package.json
+!package-lock.json

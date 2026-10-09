@@ -1,0 +1,47 @@
+{
+  "name": "opindex-agent",
+  "version": "0.1.0",
+  "description": "An agent's Solana wallet, token risk answers paid for over x402, and swaps it signs itself. Library plus an MCP server.",
+  "license": "MIT",
+  "author": "MONOLITH LABS UK <info@monolithlabs.uk>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/monolithlabs-hub/opindex-agent.git"
+  },
+  "homepage": "https://agents.opindex.io",
+  "bugs": {
+    "url": "https://github.com/monolithlabs-hub/opindex-agent/issues"
+  },
+  "private": true,
+  "type": "module",
+  "main": "./src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./mcp": "./mcp/server.mjs"
+  },
+  "bin": {
+    "opindex-mcp": "./mcp/server.mjs"
+  },
+  "files": [
+    "src",
+    "mcp",
+    "skills",
+    "test",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node test/invariants.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@solana/web3.js": "^1.99.0",
+    "@solana/spl-token": "^0.4.15",
+    "@x402/fetch": "^2.28.0",
+    "@x402/svm": "^2.28.0",
+    "zod": "^3.25.0"
+  }
+}
