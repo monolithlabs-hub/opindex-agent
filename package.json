@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "An agent's Solana wallet, token risk answers paid for over x402, and swaps it signs itself. Library plus an MCP server.",
   "license": "MIT",
-  "author": "MONOLITH LABS UK <info@monolithlabs.uk>",
+  "author": "MONOLITH LABS LTD <info@monolithlabs.uk>",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/monolithlabs-hub/opindex-agent.git"
@@ -12,7 +12,6 @@
   "bugs": {
     "url": "https://github.com/monolithlabs-hub/opindex-agent/issues"
   },
-  "private": true,
   "type": "module",
   "main": "./src/index.mjs",
   "exports": {
