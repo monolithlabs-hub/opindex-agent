@@ -14,14 +14,19 @@ No configuration is required. Add it to your agent host's MCP config:
 {
   "mcpServers": {
     "opindex": {
-      "command": "node",
-      "args": ["/absolute/path/to/opindex-agent/mcp/server.mjs"]
+      "command": "npx",
+      "args": ["-y", "opindex-agent"]
     }
   }
 }
 ```
 
-Run `npm install` in this directory first.
+That is the whole installation — `npx` fetches the package on first run. To work
+from a clone instead, point `command` at `node` and `args` at
+`/absolute/path/to/opindex-agent/mcp/server.mjs`, and run `npm install` here first.
+
+Then ask your agent to call `agent_wallet`. The key is created on first use, and
+the answer carries the address to fund.
 
 The skill in `skills/opindex-trading/SKILL.md` teaches an agent the order to
 use the tools in. Load it the way your host loads skills; without it the tool
