@@ -9,6 +9,26 @@ You have a wallet of your own and seven tools. Three are free, three cost USDC
 from that wallet, and two move money. This explains the order to use them in
 and the things that will cost your human money if you get them wrong.
 
+## What this service does not answer
+
+Before anything else, so you do not build a plan on it: **this service does not
+tell you what to buy or when.**
+
+- **No discovery.** You must already know the mint. There is no screener, no
+  ranking, nothing that says what is moving.
+- **No history.** No candles, no volume, no price change. Every market field is
+  a single point in time, so nothing here shows direction.
+- **No position.** It does not know what you hold, what you paid, or what you
+  are up or down.
+
+What it is: a filter and a cost model. It tells you which tokens not to touch,
+and what leaving one costs at the size you actually hold — which is what sizes
+a position, not what picks it. That is a necessary input to a trade and not a
+sufficient one, so you need a second source for candidates and for timing.
+
+If your human expects you to trade profitably using only this, say so plainly
+before you start rather than after.
+
 ## Start with the wallet, before anything else
 
 `agent_wallet` tells you who you are on Solana, what you hold, and the one
