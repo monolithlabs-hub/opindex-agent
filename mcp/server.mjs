@@ -50,6 +50,7 @@ const USDC = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
 const PUBLIC_RPC = 'https://api.mainnet-beta.solana.com';
 
 const mint = z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, 'a base58 Solana mint address');
+const amountUsd = z.number().int().min(1).max(1_000_000);
 const amountBase = z
   .string()
   .regex(/^[1-9][0-9]*$/, 'base units as a decimal string, no leading zero, non-zero');
@@ -67,11 +68,23 @@ const built = new Map();
 const ok = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] });
 const refuse = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value, null, 2) }], isError: true });
 
-/** A paid call to one of the service's HTTP routes, through its MCP pointer. */
-async function paid(tool, args, { method, body } = {}) {
+/**
+ * A paid call to one of the service's HTTP routes, through its MCP pointer.
+ *
+ * The pointer names the route and nothing else: the service writes the mint
+ * into the path and leaves every query parameter out. So `query` is appended
+ * here, after the pointer arrives. Without it an `amount_usd` given to
+ * `assess_token` was dropped on the way, and the answer silently came back
+ * without the exit cost at that size.
+ */
+async function paid(tool, args, { method, body, query } = {}) {
   const pointer = await resolvePointer(tool, args);
+  const url = new URL(pointer.url);
+  for (const [key, value] of Object.entries(query ?? {})) {
+    if (value !== undefined) url.searchParams.set(key, String(value));
+  }
   const payingCall = await payingFetch();
-  const response = await payingCall(pointer.url, {
+  const response = await payingCall(url.toString(), {
     method: method ?? pointer.method,
     ...(body ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}),
   });
@@ -85,7 +98,7 @@ async function paid(tool, args, { method, body } = {}) {
   return { status: response.status, body: parsed, paid: response.headers.has('payment-response') };
 }
 
-const server = new McpServer({ name: 'opindex', version: '0.1.0' });
+const server = new McpServer({ name: 'opindex', version: '0.2.0' });
 
 // ---------------------------------------------------------------- free tools
 
@@ -98,7 +111,12 @@ server.registerTool(
       'Call this first: it tells you the address to ask your human to fund, and whether the agent is able to pay at all. ' +
       'Fund with USDC before SOL — a USDC transfer creates the token account the payment scheme needs, and the scheme ' +
       'cannot create it. Read `return_address` and check it is your human\'s own wallet: if they funded from an exchange, ' +
-      'it is the exchange\'s hot wallet and returning funds there can lose them.',
+      'it is the exchange\'s hot wallet and returning funds there can lose them. ' +
+      'Before the first trade, ask your human for the limits and the risk: money at risk, size of one trade, the loss ' +
+      'at which you stop, which levels are acceptable (no_flags < caution < unknown < risky) and whether you may ' +
+      'acknowledge them yourself, the most an exit may cost, when to exit, where candidates come from, and whether to ' +
+      'confirm each trade. Say them back and keep to them: this client enforces none of them, and the amount funded ' +
+      'is the only limit anything enforces.',
     inputSchema: {},
     annotations: { readOnlyHint: true, openWorldHint: true },
   },
@@ -178,11 +196,11 @@ for (const [name, tool, price, freshness] of [
         'exit cost and liquidity are what a trade depends on and those are exactly the fields that go stale. ' +
         'The answer carries provenance on every field and `meta.partial` when something could not be measured; ' +
         'an unmeasurable number is null, never a small number.',
-      inputSchema: { mint, amount_usd: z.number().positive().optional() },
+      inputSchema: { mint, amount_usd: amountUsd.optional() },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ mint: m, amount_usd }) => {
-      const { status, body, paid: wasPaid } = await paid(tool, { mint: m, ...(amount_usd ? { amount_usd } : {}) });
+      const { status, body, paid: wasPaid } = await paid(tool, { mint: m }, { query: { amount_usd } });
       if (status !== 200) return refuse({ status, charged: wasPaid, ...body });
       return ok({ ...body, _charged: wasPaid ? price : 'not charged' });
     },
@@ -204,7 +222,9 @@ server.registerTool(
       '  not_built — a named reason; no transaction exists.\n' +
       '  unassessable — the risk could not be established, so nothing was built and nothing was charged.\n' +
       'The raw transaction is deliberately not returned: `submit_swap` takes the `swap_id` so that no transaction from ' +
-      'anywhere else can be submitted through this agent.',
+      'anywhere else can be submitted through this agent.\n' +
+      'Build only within the limits your human set (see `agent_wallet`). If none were set, ask for them before ' +
+      'building: this costs money on every call, refusals included.',
     inputSchema: {
       input_mint: mint,
       output_mint: mint,
@@ -234,6 +254,95 @@ server.registerTool(
     void transaction;
     return ok({ ...rest, swap_id: swapId, _charged: wasPaid ? '$0.05' : 'not charged' });
   },
+);
+
+// ---------------------------------------------------------- trading data
+//
+// Three routes served from the service's own samples of the tokens it watches.
+// Each answer says how it was sampled and how much of the market it covers;
+// none of them says what to buy.
+const samplesNote =
+  'Served from the service\'s own samples of the chain, about once a minute, not from a transaction feed. ' +
+  '`404 NO_HISTORY` means not sampled yet: free, ask again in a minute. `404 NOT_WATCHED` is free too; do not loop on ' +
+  'it. Data only, not investment advice.';
+
+/** One of the three data routes: paid, and a free 404 is said to be free. */
+async function sampled(tool, args, query, price) {
+  const { status, body, paid: wasPaid } = await paid(tool, args, { query });
+  if (status !== 200) return refuse({ status, charged: wasPaid, ...body });
+  return ok({ ...body, _charged: wasPaid ? price : 'not charged' });
+}
+
+server.registerTool(
+  'screen_tokens',
+  {
+    title: 'Watched tokens that meet your conditions ($0.02, paid from the wallet)',
+    description:
+      'PAID: $0.02 in USDC from this agent\'s wallet, an empty list included. The tokens this service watches that pass ' +
+      'the conditions YOU give, each with why it is included. `meta.coverage` says how many are watched: the list is ' +
+      'not the whole market, and there is no ranking by anyone\'s opinion; `sort` is one measurable field. Use your ' +
+      'human\'s limits as the conditions: `max_level`, `max_exit_cost_bps` at `amount_usd`, `min_liquidity_usd`. ' +
+      'A condition whose value could not be measured is not met. ' +
+      samplesNote,
+    inputSchema: {
+      max_level: z.enum(['no_flags', 'caution']).optional(),
+      min_liquidity_usd: z.number().positive().optional(),
+      max_exit_cost_bps: z.number().int().nonnegative().optional().describe('needs amount_usd'),
+      amount_usd: amountUsd.optional(),
+      min_age_hours: z.number().int().nonnegative().optional(),
+      quote: z.enum(['sol', 'usdc', 'any']).optional(),
+      sort: z
+        .enum(['liquidity', 'price_change_1h', 'price_change_24h', 'flow_1h', 'liquidity_change_24h', 'curve_progress'])
+        .optional(),
+      limit: z.number().int().min(1).max(50).optional(),
+      cursor: z.string().optional().describe('next_cursor of the previous page, with the same conditions'),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+  async (query) => sampled('screen_tokens', {}, query, '$0.02'),
+);
+
+server.registerTool(
+  'token_history',
+  {
+    title: 'Sampled price, liquidity and holders of a token ($0.01, paid from the wallet)',
+    description:
+      'PAID: $0.01 in USDC from this agent\'s wallet. Candles, liquidity, reserve flow and holder concentration of one ' +
+      'token over a window, made of samples (`sampling.method: reserve_snapshot`): a minute with no sample has no candle. ' +
+      '`reserve_flow` is classed swap_like, deposit_like, withdrawal_like or quiet: what the reserves looked like, ' +
+      'never trade volume. A paid call on a token nobody watches puts it on watch. ' +
+      samplesNote,
+    inputSchema: {
+      mint,
+      window: z.enum(['1h', '6h', '24h', '7d']).optional(),
+      resolution: z.enum(['1m', '5m', '15m', '1h']).optional(),
+      pool: mint.optional().describe('one pool of this mint, to read that pool rather than the watched one'),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+  async ({ mint: m, ...query }) => sampled('token_history', { mint: m }, query, '$0.01'),
+);
+
+server.registerTool(
+  'token_indicators',
+  {
+    title: 'Indicators for one token, and your position in it ($0.01, paid from the wallet)',
+    description:
+      'PAID: $0.01 in USDC from this agent\'s wallet. Numbers with formulas for one watched token: price and liquidity ' +
+      'change, drawdown, volatility, reserve flow, holder and safety changes, and exit cost at `amount_usd`. Give ' +
+      '`entry_price_usd` and `position_base_units` together to get your position; it reads nothing of your wallet. ' +
+      'Read `safety_changes_24h` first when you hold the token. A number that cannot be computed is null, never zero. ' +
+      'This route never puts a token on watch: on `NO_HISTORY` for a token nobody watches, call `token_history` first. ' +
+      samplesNote,
+    inputSchema: {
+      mint,
+      amount_usd: amountUsd.optional(),
+      entry_price_usd: z.number().positive().optional(),
+      position_base_units: amountBase.optional(),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+  async ({ mint: m, ...query }) => sampled('token_indicators', { mint: m }, query, '$0.01'),
 );
 
 // ------------------------------------------------------------ signing tools

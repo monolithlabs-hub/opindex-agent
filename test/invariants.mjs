@@ -61,6 +61,9 @@ const EXPECTED = [
   'build_swap',
   'submit_swap',
   'return_funds',
+  'screen_tokens',
+  'token_history',
+  'token_indicators',
 ];
 check('every tool is present', EXPECTED.every((n) => byName.has(n)), tools.map((t) => t.name).join(', '));
 
@@ -101,7 +104,7 @@ for (const name of ['submit_swap', 'return_funds']) {
 
 // The paid tools have to say so in words a model will read, because being
 // charged without warning is the complaint that ends an integration.
-for (const name of ['assess_token', 'assess_token_live', 'build_swap']) {
+for (const name of ['assess_token', 'assess_token_live', 'build_swap', 'screen_tokens', 'token_history', 'token_indicators']) {
   check(`${name} says it is paid`, (byName.get(name)?.description ?? '').includes('PAID'), 'description');
 }
 
@@ -124,7 +127,14 @@ check('the skill mentions every tool', missingFromSkill.length === 0, missingFro
 // the skill proves nothing about a document that mentions prices in several
 // places: a wrong price in the table passes while the right one still stands
 // in a worked example below.
-const PRICES = { assess_token: '$0.005', assess_token_live: '$0.03', build_swap: '$0.05' };
+const PRICES = {
+  assess_token: '$0.005',
+  assess_token_live: '$0.03',
+  build_swap: '$0.05',
+  screen_tokens: '$0.02',
+  token_history: '$0.01',
+  token_indicators: '$0.01',
+};
 const expectedPrices = new Set(Object.values(PRICES));
 
 for (const [tool, price] of Object.entries(PRICES)) {

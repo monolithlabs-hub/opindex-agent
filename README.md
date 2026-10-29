@@ -4,7 +4,7 @@ An agent's own Solana wallet, token risk answers it pays for over x402, and
 swaps it signs itself.
 
 Two ways in. `src/` is a library for an agent that does not speak MCP; `mcp/`
-is the same library behind seven tools for a host that does.
+is the same library behind ten tools for a host that does.
 
 ## Install (as an MCP server)
 
