@@ -33,6 +33,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
 import {
   createAssociatedTokenAccountIdempotentInstruction,
@@ -47,6 +48,16 @@ import { wallet } from '../src/wallet.mjs';
 import { connection, returnAddress, rpcSource } from '../src/returns.mjs';
 
 const USDC = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+
+/**
+ * The version that is actually running, read from the package that shipped it.
+ *
+ * Hosts install this with `npx` or with `npm install -g`, and the second never
+ * updates itself. A stale client looks exactly like a current one from inside
+ * a conversation -- fewer tools, older descriptions -- so `agent_wallet` says
+ * which one this is, and the person can compare it with npm's latest.
+ */
+const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const PUBLIC_RPC = 'https://api.mainnet-beta.solana.com';
 
 const mint = z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, 'a base58 Solana mint address');
@@ -98,7 +109,7 @@ async function paid(tool, args, { method, body, query } = {}) {
   return { status: response.status, body: parsed, paid: response.headers.has('payment-response') };
 }
 
-const server = new McpServer({ name: 'opindex', version: '0.2.0' });
+const server = new McpServer({ name: 'opindex', version: VERSION });
 
 // ---------------------------------------------------------------- free tools
 
@@ -149,6 +160,10 @@ server.registerTool(
         ? `derived from the chain: the first USDC transfer in, ${ret.signature}`
         : ret.why,
       rpc: rpcSource(),
+      client_version: VERSION,
+      client_update:
+        'Compare client_version with `npm view opindex-agent version`. Installed globally (command `opindex-mcp`), ' +
+        'it never updates itself: `npm install -g opindex-agent@latest`, then restart the host.',
       note:
         'The agent needs no SOL to pay for answers — the service\'s facilitator pays that network fee. ' +
         'SOL is for the swaps the agent signs itself.',

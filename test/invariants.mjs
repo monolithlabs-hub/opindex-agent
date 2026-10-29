@@ -41,7 +41,7 @@ const call = (method, params) =>
 const checks = [];
 const check = (name, ok, saw) => checks.push({ name, ok, saw });
 
-await call('initialize', {
+const init = await call('initialize', {
   protocolVersion: '2024-11-05',
   capabilities: {},
   clientInfo: { name: 'invariants', version: '0' },
@@ -49,6 +49,16 @@ await call('initialize', {
 child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
 
 const { result } = await call('tools/list', {});
+
+// The version a person reads to tell a stale client from a current one has to
+// be the one npm shipped. It is read from package.json at start, so this fails
+// only if someone writes a version into the server by hand again.
+const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+check(
+  'the server reports the package version',
+  init.result?.serverInfo?.version === pkg.version,
+  `${init.result?.serverInfo?.version} vs ${pkg.version}`,
+);
 const tools = result?.tools ?? [];
 const byName = new Map(tools.map((t) => [t.name, t]));
 const params = (name) => Object.keys(byName.get(name)?.inputSchema?.properties ?? {});
@@ -165,7 +175,6 @@ check(
 // starts with `./` — and says so in a warning that prints the normalised path,
 // which is the valid form, so the message points at a string that is fine.
 // That cost one failed publish; it costs nothing to pin.
-const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const bins = Object.entries(pkg.bin ?? {});
 check('the package declares an executable', bins.length > 0, JSON.stringify(pkg.bin));
 for (const [name, target] of bins) {
