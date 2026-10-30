@@ -1,6 +1,6 @@
 {
   "name": "opindex-agent",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "An agent's Solana wallet, token risk answers paid for over x402, and swaps it signs itself. Library plus an MCP server.",
   "license": "MIT",
   "author": "MONOLITH LABS LTD <info@monolithlabs.uk>",
@@ -33,7 +33,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node test/invariants.mjs"
+    "test": "node test/invariants.mjs && node test/payment.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",

@@ -105,7 +105,11 @@ the balance is worth worrying about.
 tool list, and asserts the invariants — the destination rule, that
 `acknowledge_risk` is a string and not a boolean, that the money-moving tools
 are annotated, that the paid ones say so, and that the skill's prices still
-match the tools'. It costs nothing, which is the only reason it gets run.
+match the tools'. Then it answers a few 402s itself, with a throwaway key and
+no network, and reads back what the agent signed: exactly the quoted amount of
+USDC to the payee, the facilitator as fee payer, one payment per request, and a
+refusal for devnet, an unknown asset, or more than the x402 library's default
+of $1 a payment. It costs nothing, which is the only reason it gets run.
 
 It ships with the package deliberately. This library holds a wallet, and the
 useful form of that claim is not "trust us" but "run the check yourself":

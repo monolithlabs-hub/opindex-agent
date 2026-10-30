@@ -277,7 +277,8 @@ server.registerTool(
 // Each answer says how it was sampled and how much of the market it covers;
 // none of them says what to buy.
 const samplesNote =
-  'Served from the service\'s own samples of the chain, about once a minute, not from a transaction feed. ' +
+  'Served from the service\'s own samples of the chain, about once a minute (every five minutes for an established ' +
+  'token, holders every six hours), not from a transaction feed. ' +
   '`404 NO_HISTORY` means not sampled yet: free, ask again in a minute. `404 NOT_WATCHED` is free too; do not loop on ' +
   'it. Data only, not investment advice.';
 
@@ -297,7 +298,11 @@ server.registerTool(
       'the conditions YOU give, each with why it is included. `meta.coverage` says how many are watched: the list is ' +
       'not the whole market, and there is no ranking by anyone\'s opinion; `sort` is one measurable field. Use your ' +
       'human\'s limits as the conditions: `max_level`, `max_exit_cost_bps` at `amount_usd`, `min_liquidity_usd`. ' +
-      'A condition whose value could not be measured is not met. ' +
+      'A condition whose value could not be measured is not met. `404 NOT_ASSESSED` means no watched token has been ' +
+      'assessed yet: free, and the watcher is filling them in; ask again in a few minutes, not sooner. An empty list ' +
+      'with the same conditions will be empty again a minute later: change the conditions or ask your human. An empty ' +
+      '`no_flags` list is an answer about the watched set: tell your human, do not repeat. An item\'s `seed` may be ' +
+      '`established` (liquid tokens older than a month, from Jupiter\'s verified list). ' +
       samplesNote,
     inputSchema: {
       max_level: z.enum(['no_flags', 'caution']).optional(),
