@@ -5,6 +5,6 @@
 
 export { identity, keyPath, loadOrCreateKey } from './agent.mjs';
 export { baseUrl, listTools, mcp, resolvePointer } from './discover.mjs';
-export { buyAssessment, payingFetch } from './pay.mjs';
+export { buyAssessment, isOverPrice, payingFetch } from './pay.mjs';
 export { PUBLIC_RPC, connection, returnAddress, rpcSource } from './returns.mjs';
-export { USDC, units, wallet } from './wallet.mjs';
+export { USDC, holdings, lookalike, lookalikeSenders, ownerBalanceChanges, units, wallet } from './wallet.mjs';

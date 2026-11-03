@@ -16,8 +16,9 @@
 //   * it pays only on Solana mainnet, only in an asset the library knows, and
 //     only up to the library's default of $1 a payment.
 //
-// What it does NOT check, stated plainly: that the amount is the price the
-// tool's description names. A 402 asking $0.90 for a $0.005 answer is paid.
+// And given a tool's price (`payingFetch({ maxAmountPerPayment })`, which is
+// how the MCP server calls it), it pays that price and not a unit more: a 402
+// asking $0.90 for a $0.005 answer is refused unsigned.
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -29,7 +30,7 @@ import { MintLayout, TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from '@so
 const keyDir = mkdtempSync(join(tmpdir(), 'opindex-payment-test-'));
 process.env.OPINDEX_AGENT_KEY = join(keyDir, 'agent.json');
 
-const { payingFetch } = await import('../src/pay.mjs');
+const { payingFetch, isOverPrice } = await import('../src/pay.mjs');
 const { loadOrCreateKey } = await import('../src/agent.mjs');
 
 const MAINNET = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
@@ -144,10 +145,10 @@ globalThis.fetch = async (input, init) => {
  * saw, because the question each check asks is about those requests: how many
  * there were, and what the signed one carried.
  */
-async function run(respond) {
+async function run(respond, options) {
   seen = [];
   serve = respond;
-  const payingGet = await payingFetch();
+  const payingGet = await payingFetch(options);
   try {
     return { response: await payingGet(ROUTE), requests: seen };
   } catch (error) {
@@ -250,6 +251,26 @@ for (const [name, offered, reason] of [
   // The boundary of that default, so a cap that moved either way is seen.
   const { response, error } = await run((_req, n) => (n === 1 ? paymentRequired([quote({ amount: '1000000' })]) : settled()));
   check('exactly $1 is still paid', response?.status === 200, error?.message ?? response?.status);
+}
+
+// --- it pays the tool's stated price and no more -------------------------------
+
+{
+  const assess = { maxAmountPerPayment: '$0.005' };
+  const { response, error } = await run((_req, n) => (n === 1 ? paymentRequired([quote()]) : settled()), assess);
+  check('at the stated price ($0.005), a 5000-unit quote is paid', response?.status === 200, error?.message ?? response?.status);
+
+  for (const [name, amount] of [
+    ['one unit over the stated price', '5001'],
+    ['$0.90 for a $0.005 answer', '900000'],
+  ]) {
+    const { response: r, error: e, requests } = await run(() => paymentRequired([quote({ amount })]), assess);
+    check(
+      `${name} is refused, not paid, and reads as over the price`,
+      isOverPrice(e) && signed(requests).length === 0,
+      e?.message?.slice(0, 200) ?? r?.status,
+    );
+  }
 }
 
 rmSync(keyDir, { recursive: true, force: true });

@@ -4,7 +4,7 @@ An agent's own Solana wallet, token risk answers it pays for over x402, and
 swaps it signs itself.
 
 Two ways in. `src/` is a library for an agent that does not speak MCP; `mcp/`
-is the same library behind ten tools for a host that does.
+is the same library behind eleven tools for a host that does.
 
 ## Install (as an MCP server)
 
@@ -64,10 +64,17 @@ fee payer on an x402 settlement. SOL is only for the swaps the agent signs.
 
 ## What this key can and cannot sign
 
-Two constraints, about the kind of action rather than its size. There are no
-spending limits here on purpose: a default limit would be a guess about your
+Two constraints, about the kind of action rather than its size. There is no
+spending policy here on purpose: a default limit would be a guess about your
 risk appetite, and you have already stated yours by choosing how much to fund
 the wallet with.
+
+One check is made on the bill, and it is not a limit on what the agent does:
+each paid tool pays **at most the price it states**. A 402 asking more — a
+mispriced route, or anything that is not our service — is refused before
+anything is signed, and the agent is told why (`price_above_stated`). Without
+it, the x402 library's own default would have paid up to $1 for a half-cent
+answer.
 
 1. **The agent can only swap.** There is no transfer tool.
 2. **Funds return only to whoever funded the agent first**, read from chain
@@ -87,17 +94,26 @@ lose them. We cannot tell an exchange address from a personal one, so
 `agent_wallet` shows the derived address from the first call — check it before
 the balance is worth worrying about.
 
+### Never copy your address out of the agent's history
+
+Within a minute of funding, someone may send the agent dust from an address
+made to look like yours: the same first and last characters. It cannot change
+where `return_funds` pays — that is the first funder, read from the chain — but
+it is waiting for you to copy "your" address from the agent's transaction list.
+`agent_wallet` names such senders under `lookalike_senders`.
+
 ## Tools
 
 | | cost | |
 |---|---|---|
-| `agent_wallet` | free | address, balances, and the one return address |
+| `agent_wallet` | free | address, balances, the tokens it holds, and the one return address |
 | `token_identity` | free | the full answer, possibly a day stale |
 | `assess_token` | $0.005 | within the service's TTL window |
 | `assess_token_live` | $0.03 | read from the chain on this request |
 | `build_swap` | $0.05 | a verdict and a transaction, or a refusal naming the risk — **a refusal is charged** |
-| `submit_swap` | free | signs and sends a swap this server built; you pay the network fee |
+| `submit_swap` | free | signs and sends a swap this server built, and reports what actually arrived; you pay the network fee |
 | `return_funds` | free | USDC back to the funder; no destination parameter |
+| `close_empty_token_accounts` | free | returns the rent of token accounts a sale left empty, to the agent itself; no parameters |
 
 ## Tests
 
@@ -108,8 +124,11 @@ are annotated, that the paid ones say so, and that the skill's prices still
 match the tools'. Then it answers a few 402s itself, with a throwaway key and
 no network, and reads back what the agent signed: exactly the quoted amount of
 USDC to the payee, the facilitator as fee payer, one payment per request, and a
-refusal for devnet, an unknown asset, or more than the x402 library's default
-of $1 a payment. It costs nothing, which is the only reason it gets run.
+refusal for devnet, an unknown asset, more than the x402 library's default of
+$1 a payment, or more than the tool's own stated price. Last, it reads balances
+back out of transactions shaped like a real buy and sell, and checks that an
+address imitating the funder's is caught. It costs nothing, which is the only
+reason it gets run.
 
 It ships with the package deliberately. This library holds a wallet, and the
 useful form of that claim is not "trust us" but "run the check yourself":

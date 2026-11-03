@@ -12,6 +12,17 @@
 // against a recent blockhash. It needs no SOL: the service's facilitator is the
 // fee payer on an x402 settlement, so the agent's lamport balance is untouched
 // by paying. SOL is only for transactions the agent signs itself.
+//
+// # What a payment may cost
+//
+// Not a spending limit — those belong to whoever funds the agent — but a check
+// that the bill is the one we published. Given `maxAmountPerPayment`, a 402
+// asking more than that is refused before anything is signed. The MCP server
+// passes each tool's own stated price, so a 402 asking $0.90 for a $0.005
+// answer, from a mispriced route or from anything that is not our service, is
+// not paid. It uses the x402 library's own spend control, so the refusal names
+// `maxAmountPerPayment` in its message. Without the option the library's
+// default applies: $1 a payment, in assets it knows.
 
 import { wrapFetchWithPaymentFromConfig, decodePaymentResponseHeader } from '@x402/fetch';
 import { ExactSvmScheme, SOLANA_MAINNET_CAIP2 } from '@x402/svm';
@@ -19,8 +30,13 @@ import { createKeyPairSignerFromBytes } from '@solana/kit';
 import { loadOrCreateKey } from './agent.mjs';
 import { resolvePointer } from './discover.mjs';
 
-/** A paying fetch, built from the agent's own key. */
-export async function payingFetch() {
+/**
+ * A paying fetch, built from the agent's own key.
+ *
+ * `maxAmountPerPayment` is a dollar string such as `"$0.005"`: the most one
+ * payment through this fetch may ask. Omitted, the library's default stands.
+ */
+export async function payingFetch({ maxAmountPerPayment } = {}) {
   const { keypair } = loadOrCreateKey();
   const signer = await createKeyPairSignerFromBytes(keypair.secretKey);
   return wrapFetchWithPaymentFromConfig(fetch, {
@@ -32,8 +48,12 @@ export async function payingFetch() {
         x402Version: 2,
       },
     ],
+    ...(maxAmountPerPayment ? { spendControls: { maxAmountPerPayment } } : {}),
   });
 }
+
+/** Whether `error` is the x402 library refusing a 402 over its spend cap. */
+export const isOverPrice = (error) => /spendControls\.maxAmountPerPayment/.test(String(error?.message ?? error));
 
 /**
  * Buy one assessment, through the pointer discovery gave us.

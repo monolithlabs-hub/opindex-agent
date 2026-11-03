@@ -74,6 +74,7 @@ const EXPECTED = [
   'screen_tokens',
   'token_history',
   'token_indicators',
+  'close_empty_token_accounts',
 ];
 check('every tool is present', EXPECTED.every((n) => byName.has(n)), tools.map((t) => t.name).join(', '));
 
@@ -97,6 +98,13 @@ check('no tool takes a destination address', offenders.length === 0, offenders.j
 
 check('return_funds takes an amount and nothing else', JSON.stringify(params('return_funds')) === '["amount"]', params('return_funds').join(', '));
 check('submit_swap takes a swap_id and nothing else', JSON.stringify(params('submit_swap')) === '["swap_id"]', params('submit_swap').join(', '));
+// The rent goes back to the agent. A parameter of any name here would be a
+// place to say where else it goes.
+check(
+  'close_empty_token_accounts takes no parameters',
+  params('close_empty_token_accounts').length === 0,
+  params('close_empty_token_accounts').join(', '),
+);
 
 // `taker` is the agent itself and is filled in by the server. If it became a
 // parameter, the agent could build a swap that pays out to someone else.
@@ -107,8 +115,8 @@ check('build_swap does not take a taker', !params('build_swap').includes('taker'
 const ack = byName.get('build_swap')?.inputSchema?.properties?.acknowledge_risk;
 check('acknowledge_risk is a string, not a boolean', ack?.type === 'string', JSON.stringify(ack?.type));
 
-// The two tools that move money must be marked, so a host can require consent.
-for (const name of ['submit_swap', 'return_funds']) {
+// The tools that sign transactions must be marked, so a host can require consent.
+for (const name of ['submit_swap', 'return_funds', 'close_empty_token_accounts']) {
   check(`${name} is annotated as not read-only`, byName.get(name)?.annotations?.readOnlyHint === false, JSON.stringify(byName.get(name)?.annotations));
 }
 

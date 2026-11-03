@@ -12,13 +12,18 @@
 //
 // # What this key can and cannot sign
 //
-// Two constraints, about the KIND of action rather than its size. There are no
-// spending limits here on purpose: a default limit would be a guess about
+// Two constraints, about the KIND of action rather than its size. There is no
+// spending policy here on purpose: a default limit would be a guess about
 // someone else's risk appetite, and whoever created the agent has already
 // stated theirs by choosing how much to fund the wallet with.
 //
 //   1. The agent can only swap. There is no transfer tool.
 //   2. Funds return only to whoever funded the agent first.
+//
+// One check is made on what a payment costs, and it is not a limit: each paid
+// tool pays at most the price it states (`PRICES`). A 402 asking more is
+// refused unpaid, whatever the agent's balance. Without it the x402 library's
+// default would have paid anything up to $1 for a half-cent answer.
 //
 // Both reduce to one invariant, which `npm test` checks mechanically: NO TOOL
 // TAKES A DESTINATION ADDRESS AS A PARAMETER. The payment's recipient comes
@@ -37,17 +42,32 @@ import { readFileSync } from 'node:fs';
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
 import {
   createAssociatedTokenAccountIdempotentInstruction,
+  createCloseAccountInstruction,
   createTransferCheckedInstruction,
   getAssociatedTokenAddress,
 } from '@solana/spl-token';
 
 import { identity, loadOrCreateKey } from '../src/agent.mjs';
 import { resolvePointer, mcp } from '../src/discover.mjs';
-import { payingFetch } from '../src/pay.mjs';
-import { wallet } from '../src/wallet.mjs';
+import { isOverPrice, payingFetch } from '../src/pay.mjs';
+import { holdings, lookalikeSenders, lookalikesSoFar, ownerBalanceChanges, wallet } from '../src/wallet.mjs';
 import { connection, returnAddress, rpcSource } from '../src/returns.mjs';
 
 const USDC = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+
+/**
+ * What each paid tool costs, and so the most one of its payments may ask.
+ * The descriptions below state the same prices, and `npm test` checks that
+ * they and the skill agree.
+ */
+const PRICES = {
+  assess_token: '$0.005',
+  assess_token_live: '$0.03',
+  build_swap: '$0.05',
+  screen_tokens: '$0.02',
+  token_history: '$0.01',
+  token_indicators: '$0.01',
+};
 
 /**
  * The version that is actually running, read from the package that shipped it.
@@ -87,6 +107,10 @@ const refuse = (value) => ({ content: [{ type: 'text', text: JSON.stringify(valu
  * here, after the pointer arrives. Without it an `amount_usd` given to
  * `assess_token` was dropped on the way, and the answer silently came back
  * without the exit cost at that size.
+ *
+ * A 402 asking more than the tool's price is refused before anything is
+ * signed, and comes back as an answer, not a thrown error, so the agent reads
+ * why.
  */
 async function paid(tool, args, { method, body, query } = {}) {
   const pointer = await resolvePointer(tool, args);
@@ -94,11 +118,28 @@ async function paid(tool, args, { method, body, query } = {}) {
   for (const [key, value] of Object.entries(query ?? {})) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
-  const payingCall = await payingFetch();
-  const response = await payingCall(url.toString(), {
-    method: method ?? pointer.method,
-    ...(body ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}),
-  });
+  const price = PRICES[tool];
+  const payingCall = await payingFetch({ maxAmountPerPayment: price });
+  let response;
+  try {
+    response = await payingCall(url.toString(), {
+      method: method ?? pointer.method,
+      ...(body ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}),
+    });
+  } catch (err) {
+    if (!isOverPrice(err)) throw err;
+    return {
+      status: 402,
+      paid: false,
+      body: {
+        error: 'price_above_stated',
+        why:
+          `the payment asked for more than ${price}, the price ${tool} states. Nothing was signed or paid. ` +
+          'Either this client is out of date (compare client_version in agent_wallet with npm) or the 402 did not ' +
+          'come from the price we publish. Tell your human; do not retry in a loop.',
+      },
+    };
+  }
   const text = await response.text();
   let parsed;
   try {
@@ -107,6 +148,26 @@ async function paid(tool, args, { method, body, query } = {}) {
     parsed = { unparseable: text.slice(0, 400) };
   }
   return { status: response.status, body: parsed, paid: response.headers.has('payment-response') };
+}
+
+/**
+ * The lookalike scan, run in the background of this long-lived process.
+ *
+ * On the public endpoint a scan of twenty transactions took 47 to 96 seconds
+ * on 2026-11-03, rate limits and their retries included; `agent_wallet` cannot
+ * wait for that. So it waits a few seconds, and if the scan is still running
+ * answers with what earlier scans found and says the scan continues. One scan
+ * at a time.
+ */
+let scanning = null;
+async function lookalikeScan(conn, returnAddr, waitMs = 3000) {
+  scanning ??= lookalikeSenders(conn, returnAddr, { perCall: 100 })
+    .catch((err) => ({ failed: String(err) }))
+    .finally(() => {
+      scanning = null;
+    });
+  const done = await Promise.race([scanning, new Promise((resolve) => setTimeout(() => resolve(null), waitMs))]);
+  return done ?? { ...lookalikesSoFar(), running: true };
 }
 
 const server = new McpServer({ name: 'opindex', version: VERSION });
@@ -123,20 +184,31 @@ server.registerTool(
       'Fund with USDC before SOL — a USDC transfer creates the token account the payment scheme needs, and the scheme ' +
       'cannot create it. Read `return_address` and check it is your human\'s own wallet: if they funded from an exchange, ' +
       'it is the exchange\'s hot wallet and returning funds there can lose them. ' +
+      '`tokens` lists every other token the agent holds: a position is its `balance_base_units` here, not the ' +
+      '`out_amount` a swap quote estimated, so use this number for `position_base_units` and sell exactly this. ' +
+      'If `lookalike_senders` is not empty, someone sent dust from an address that imitates `return_address`: tell your ' +
+      'human never to copy their address out of this wallet\'s history. ' +
       'Before the first trade, ask your human for the limits and the risk: money at risk, size of one trade, the loss ' +
       'at which you stop, which levels are acceptable (no_flags < caution < unknown < risky) and whether you may ' +
-      'acknowledge them yourself, the most an exit may cost, when to exit, where candidates come from, and whether to ' +
-      'confirm each trade. Say them back and keep to them: this client enforces none of them, and the amount funded ' +
-      'is the only limit anything enforces.',
+      'acknowledge them yourself, the most an exit may cost, when to exit and how often you will check, where ' +
+      'candidates come from, and whether to confirm each trade. Say them back and keep to them: this client enforces ' +
+      'none of them, and the amount funded is the only spending limit anything enforces. The one check it makes is ' +
+      'that a payment is no more than the price its tool states.',
     inputSchema: {},
     annotations: { readOnlyHint: true, openWorldHint: true },
   },
   async () => {
     const me = identity();
-    const [f, ret] = await Promise.all([
+    const conn = connection();
+    const [f, ret, tokens] = await Promise.all([
       wallet().catch((err) => ({ failed: String(err) })),
-      returnAddress(connection(), me.address).catch((err) => ({ address: null, why: String(err) })),
+      returnAddress(conn, me.address).catch((err) => ({ address: null, why: String(err) })),
+      holdings(conn).catch((err) => ({ failed: String(err) })),
     ]);
+    // A warning, never a gate: a failed scan says so and the answer stands.
+    const lookalikes = ret.address
+      ? await lookalikeScan(conn, ret.address)
+      : { failed: 'no return address to compare against' };
     // A failed balance read must not read as "you have no money": that would
     // stop the agent trying to pay at all, which is a worse answer than an
     // error. Refuse loudly instead.
@@ -155,10 +227,34 @@ server.registerTool(
       usdc_account: f.usdcAccount,
       usdc_account_exists: f.usdcAccountExists,
       can_pay: f.canPay,
+      tokens: tokens.failed
+        ? { unknown: 'could not read token accounts', detail: tokens.failed, why: 'unknown, NOT none held' }
+        : tokens,
       return_address: ret.address,
       return_address_source: ret.address
         ? `derived from the chain: the first USDC transfer in, ${ret.signature}`
         : ret.why,
+      ...(lookalikes.failed
+        ? { lookalike_check: `not checked: ${lookalikes.failed}` }
+        : {
+            lookalike_senders: lookalikes.senders,
+            lookalike_check: lookalikes.running
+              ? 'from earlier scans; a scan of newer history is running, so ask again in a few minutes'
+              : lookalikes.unread
+              ? `history read in part: ${lookalikes.unread} transactions still unread; later calls read on`
+              : lookalikes.truncated
+                ? 'read back to the 200 transactions before the first scan, and everything since'
+                : 'the whole history is read',
+            ...(lookalikes.senders.length
+              ? {
+                  lookalike_warning:
+                    'These addresses share the first and last three characters of return_address and are NOT it. ' +
+                    'They sent this wallet transactions so that someone copying an address from its history copies ' +
+                    'theirs. return_funds is unaffected: it pays the first funder, read from the chain. Tell your ' +
+                    'human; never send anything to an address taken from this wallet\'s history.',
+                }
+              : {}),
+          }),
       rpc: rpcSource(),
       client_version: VERSION,
       client_update:
@@ -238,6 +334,9 @@ server.registerTool(
       '  unassessable — the risk could not be established, so nothing was built and nothing was charged.\n' +
       'The raw transaction is deliberately not returned: `submit_swap` takes the `swap_id` so that no transaction from ' +
       'anywhere else can be submitted through this agent.\n' +
+      'To sell, `amount` is the `balance_base_units` that `agent_wallet` lists under `tokens` (or that `submit_swap` ' +
+      'reported after the buy), never the `out_amount` this tool quoted: the quote is an estimate, and selling more than ' +
+      'you hold fails.\n' +
       'Build only within the limits your human set (see `agent_wallet`). If none were set, ask for them before ' +
       'building: this costs money on every call, refusals included.',
     inputSchema: {
@@ -367,6 +466,39 @@ server.registerTool(
 
 // ------------------------------------------------------------ signing tools
 
+/** The signature's status once the network reports one, or null after a minute. */
+async function statusOf(conn, signature) {
+  for (let i = 0; i < 40; i += 1) {
+    const { value } = await conn.getSignatureStatuses([signature]);
+    if (value?.[0]) return value[0];
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  return null;
+}
+
+/**
+ * What a confirmed transaction moved in this wallet, read from the transaction.
+ *
+ * A status can be confirmed a moment before the transaction is readable, so
+ * this asks a few times. If it still cannot read it, it says so: the swap
+ * stands either way, and a missing number is unknown, not zero.
+ */
+async function balanceChanges(conn, signature, owner) {
+  for (let i = 0; i < 8; i += 1) {
+    const tx = await conn
+      .getParsedTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' })
+      .catch(() => null);
+    if (tx?.meta) return { balance_changes: ownerBalanceChanges(tx, owner) };
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  return {
+    balance_changes: null,
+    balance_changes_why:
+      'the transaction was confirmed but could not be read back yet. Read the token balance from agent_wallet ' +
+      'before recording the position; do not use the quote\'s out_amount.',
+  };
+}
+
 server.registerTool(
   'submit_swap',
   {
@@ -375,7 +507,9 @@ server.registerTool(
       'Free from the service; the agent pays the Solana network fee itself from its SOL. Takes only a `swap_id` from a ' +
       '`built` answer — never transaction bytes — so a transaction from any other source cannot be sent through this ' +
       'agent. Refuses an expired quote by name rather than losing it silently. Reports what actually happened: ' +
-      'submitted and confirmed are different, and a transaction that failed on chain is reported as failed.',
+      'submitted and confirmed are different, and a transaction that failed on chain is reported as failed. ' +
+      'A confirmed swap comes back with `balance_changes`, read from the transaction itself: what the wallet really ' +
+      'received and spent. Record the token\'s `balance_base_units` as your position, not the quote\'s `out_amount`.',
     inputSchema: { swap_id: z.string().regex(/^[0-9a-f]{32}$/, 'a swap_id from a built answer') },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
   },
@@ -412,15 +546,16 @@ server.registerTool(
     }
     built.delete(swap_id);
 
-    for (let i = 0; i < 40; i += 1) {
-      const { value } = await send.getSignatureStatuses([signature]);
-      const status = value?.[0];
-      if (status) {
-        return status.err
-          ? refuse({ signature, submitted: true, confirmed: false, failed_on_chain: status.err })
-          : ok({ signature, submitted: true, confirmed: true, commitment: status.confirmationStatus });
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+    const status = await statusOf(send, signature);
+    if (status) {
+      if (status.err) return refuse({ signature, submitted: true, confirmed: false, failed_on_chain: status.err });
+      return ok({
+        signature,
+        submitted: true,
+        confirmed: true,
+        commitment: status.confirmationStatus,
+        ...(await balanceChanges(read, signature, keypair.publicKey.toBase58())),
+      });
     }
     return refuse({
       signature,
@@ -481,6 +616,69 @@ server.registerTool(
       amount_usdc_base_units: amount,
       submitted: true,
       note: 'Confirm the signature before assuming it landed.',
+    });
+  },
+);
+
+/**
+ * Selling a whole position leaves its token account behind, empty, holding
+ * rent: 1 488 440 lamports on 2026-11-03, 15% of the 0.01 SOL trade that made it.
+ * Closing returns the rent to the agent itself — the close instruction's
+ * destination is fixed to the owner here, so this adds no destination
+ * parameter and the invariant stands.
+ */
+const MAX_CLOSES_PER_TX = 20;
+
+server.registerTool(
+  'close_empty_token_accounts',
+  {
+    title: 'Close empty token accounts and take their rent back',
+    description:
+      'Free from the service; the agent pays the Solana network fee. Each token account holds about 0.0015 SOL of rent, ' +
+      'and selling a whole position leaves the account behind, empty, still holding it. This closes the EMPTY token ' +
+      'accounts the agent owns (those `agent_wallet` marks `empty: true`) and returns their rent to this agent\'s own ' +
+      'wallet. It never touches an account with a balance and never the USDC account, which paying for answers needs. ' +
+      `It takes no parameters: the rent can only come back here. At most ${MAX_CLOSES_PER_TX} accounts per call.`,
+    inputSchema: {},
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  async () => {
+    const { keypair } = loadOrCreateKey();
+    const owner = keypair.publicKey;
+    const read = connection();
+    let empty;
+    try {
+      empty = (await holdings(read)).filter((t) => t.empty).slice(0, MAX_CLOSES_PER_TX);
+    } catch (err) {
+      return refuse({ error: 'could not read token accounts', detail: String(err).slice(0, 300) });
+    }
+    if (!empty.length) return ok({ closed: [], note: 'no empty token accounts to close' });
+
+    const { Transaction } = await import('@solana/web3.js');
+    const tx = new Transaction();
+    for (const t of empty) {
+      tx.add(createCloseAccountInstruction(new PublicKey(t.account), owner, owner, [], new PublicKey(t.program)));
+    }
+    tx.feePayer = owner;
+    tx.recentBlockhash = (await read.getLatestBlockhash('confirmed')).blockhash;
+    tx.sign(keypair);
+
+    const send = new (await import('@solana/web3.js')).Connection(PUBLIC_RPC, 'confirmed');
+    let signature;
+    try {
+      signature = await send.sendRawTransaction(tx.serialize(), { maxRetries: 3 });
+    } catch (err) {
+      return refuse({ error: 'the network refused the transaction', detail: String(err).slice(0, 300) });
+    }
+    const status = await statusOf(send, signature);
+    const closed = empty.map(({ mint: m, account, rent_lamports }) => ({ mint: m, account, rent_lamports }));
+    if (!status) return refuse({ signature, submitted: true, confirmed: false, why: 'no status after 60 seconds' });
+    if (status.err) return refuse({ signature, submitted: true, confirmed: false, failed_on_chain: status.err });
+    return ok({
+      signature,
+      confirmed: true,
+      closed,
+      rent_returned_lamports: String(closed.reduce((sum, c) => sum + c.rent_lamports, 0)),
     });
   },
 );
